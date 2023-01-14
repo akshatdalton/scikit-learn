@@ -1,37 +1,3 @@
-"""
-=========================================
-Image denoising using dictionary learning
-=========================================
-
-An example comparing the effect of reconstructing noisy fragments
-of a raccoon face image using firstly online :ref:`DictionaryLearning` and
-various transform methods.
-
-The dictionary is fitted on the distorted left half of the image, and
-subsequently used to reconstruct the right half. Note that even better
-performance could be achieved by fitting to an undistorted (i.e.
-noiseless) image, but here we start from the assumption that it is not
-available.
-
-A common practice for evaluating the results of image denoising is by looking
-at the difference between the reconstruction and the original image. If the
-reconstruction is perfect this will look like Gaussian noise.
-
-It can be seen from the plots that the results of :ref:`omp` with two
-non-zero coefficients is a bit less biased than when keeping only one
-(the edges look less prominent). It is in addition closer from the ground
-truth in Frobenius norm.
-
-The result of :ref:`least_angle_regression` is much more strongly biased: the
-difference is reminiscent of the local intensity value of the original image.
-
-Thresholding is clearly not useful for denoising, but it is here to show that
-it can produce a suggestive output with very high speed, and thus be useful
-for other tasks such as object classification, where performance is not
-necessarily related to visualisation.
-
-"""
-
 from time import time
 
 import matplotlib.pyplot as plt
@@ -54,21 +20,25 @@ except ImportError:
 # a floating point representation with values between 0 and 1.
 face = face / 255.0
 
-# downsample for higher speed
-face = face[::4, ::4] + face[1::4, ::4] + face[::4, 1::4] + face[1::4, 1::4]
-face /= 4.0
-height, width = face.shape
+# im_ascent = sp.misc.ascent().astype(float)
+im_ascent = face
+height, width = im_ascent.shape
 
-# Distort the right half of the image
+# Distort the image
 print("Distorting image...")
-distorted = face.copy()
-distorted[:, width // 2 :] += 0.075 * np.random.randn(height, width // 2)
+
+noise = np.ones_like(im_ascent)
+noise[:, width // 2 - 6 : width // 2 + 6] = 0
+distorted = im_ascent * noise
+plt.imshow(distorted, vmin=0, vmax=1, cmap=plt.cm.gray, interpolation="nearest")
+plt.show()
+# exit(0)
 
 # Extract all reference patches from the left half of the image
 print("Extracting reference patches...")
 t0 = time()
-patch_size = (7, 7)
-data = extract_patches_2d(distorted[:, : width // 2], patch_size)
+patch_size = (8, 8)
+data = extract_patches_2d(im_ascent, patch_size)
 data = data.reshape(data.shape[0], -1)
 data -= np.mean(data, axis=0)
 data /= np.std(data, axis=0)
@@ -80,7 +50,7 @@ print("done in %.2fs." % (time() - t0))
 print("Learning the dictionary...")
 t0 = time()
 dico = MiniBatchDictionaryLearning(
-    n_components=50, alpha=1, n_iter=250, dict_method="ksvd"
+    n_components=441, alpha=1, n_iter=500, dict_method="ksvd"
 )
 V = dico.fit(data).components_
 dt = time() - t0
@@ -93,14 +63,11 @@ for i, comp in enumerate(V[:100]):
     plt.xticks(())
     plt.yticks(())
 plt.suptitle(
-    "Dictionary learned from face patches\n"
+    "Dictionary learned from im_ascent patches\n"
     + "Train time %.1fs on %d patches" % (dt, len(data)),
     fontsize=16,
 )
 plt.subplots_adjust(0.08, 0.02, 0.92, 0.85, 0.08, 0.23)
-plt.show()
-# plt.savefig("dictionary", format='png')
-
 
 # #############################################################################
 # Display the distorted image
@@ -125,17 +92,16 @@ def show_with_diff(image, reference, title):
     plt.yticks(())
     plt.suptitle(title, size=16)
     plt.subplots_adjust(0.02, 0.02, 0.98, 0.79, 0.02, 0.2)
-    # plt.savefig(title, format='png')
 
 
-show_with_diff(distorted, face, "Distorted image")
+show_with_diff(distorted, im_ascent, "Distorted image")
 
 # #############################################################################
 # Extract noisy patches and reconstruct them using the dictionary
 
 print("Extracting noisy patches... ")
 t0 = time()
-data = extract_patches_2d(distorted[:, width // 2 :], patch_size)
+data = extract_patches_2d(distorted, patch_size)
 data = data.reshape(data.shape[0], -1)
 intercept = np.mean(data, axis=0)
 data -= intercept
@@ -144,8 +110,8 @@ print("done in %.2fs." % (time() - t0))
 transform_algorithms = [
     ("Orthogonal Matching Pursuit\n1 atom", "omp", {"transform_n_nonzero_coefs": 1}),
     ("Orthogonal Matching Pursuit\n2 atoms", "omp", {"transform_n_nonzero_coefs": 2}),
-    ("Orthogonal Matching Pursuit\n2 atoms", "omp", {"transform_n_nonzero_coefs": 8}),
-    ("Orthogonal Matching Pursuit\n2 atoms", "omp", {"transform_n_nonzero_coefs": 16}),
+    # ("Orthogonal Matching Pursuit\n8 atoms", "omp", {"transform_n_nonzero_coefs": 8}),
+    # ("Orthogonal Matching Pursuit\n16 atoms", "omp", {"transform_n_nonzero_coefs": 16}),
     # ("Least-angle regression\n4 atoms", "lars", {"transform_n_nonzero_coefs": 4}),
     # ("Thresholding\n alpha=0.1", "threshold", {"transform_alpha": 0.1}),
 ]
@@ -153,7 +119,6 @@ transform_algorithms = [
 reconstructions = {}
 for title, transform_algorithm, kwargs in transform_algorithms:
     print(title + "...")
-    reconstructions[title] = face.copy()
     t0 = time()
     dico.set_params(transform_algorithm=transform_algorithm, **kwargs)
     code = dico.transform(data)
@@ -164,12 +129,10 @@ for title, transform_algorithm, kwargs in transform_algorithms:
     if transform_algorithm == "threshold":
         patches -= patches.min()
         patches /= patches.max()
-    reconstructions[title][:, width // 2 :] = reconstruct_from_patches_2d(
-        patches, (height, width // 2)
-    )
+    reconstructions[title] = reconstruct_from_patches_2d(patches, (height, width))
     dt = time() - t0
     print("done in %.2fs." % dt)
-    show_with_diff(reconstructions[title], face, title + " (time: %.1fs)" % dt)
+    show_with_diff(reconstructions[title], im_ascent, title + " (time: %.1fs)" % dt)
 
 plt.show()
 # plt.savefig("plot_figure", format='png')

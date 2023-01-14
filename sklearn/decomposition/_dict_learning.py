@@ -488,6 +488,47 @@ def _update_dict(
         print(f"{n_unused} unused atoms resampled.")
 
 
+def ksvd_update_dict(
+    dictionary,
+    Y,
+    code,
+    A=None,
+    B=None,
+    verbose=False,
+    random_state=None,
+    positive=False,
+):
+    n_samples, n_components = code.shape
+    random_state = check_random_state(random_state)
+
+    n_unused = 0
+
+    dictionary = dictionary.T
+    Y = Y.T
+    code = code.T
+
+    threshold = 1.0e-4
+    for k in range(n_components):
+        W = np.where(code[k] >= threshold)[0]
+        if len(W) == 0:
+            continue
+
+        dictionary[:, k] = 0
+        error_r = (Y - dictionary @ code)[:, W]
+
+        U, delta, VT = linalg.svd(error_r, full_matrices=False)
+
+        dictionary[:, k] = U[:, 0]
+        code[k, W] = VT[0, :] * delta[0]
+
+    dictionary = dictionary.T
+    Y = Y.T
+    code = code.T
+
+    if verbose and n_unused > 0:
+        print(f"{n_unused} unused atoms resampled.")
+
+
 def dict_learning(
     X,
     n_components,
@@ -740,6 +781,7 @@ def dict_learning_online(
     positive_dict=False,
     positive_code=False,
     method_max_iter=1000,
+    dict_method="online",
 ):
     """Solves a dictionary learning matrix factorization problem online.
 
@@ -869,12 +911,12 @@ def dict_learning_online(
     if n_components is None:
         n_components = X.shape[1]
 
-    if method not in ("lars", "cd"):
+    if method not in ("lars", "cd", "omp"):
         raise ValueError("Coding method not supported as a fit algorithm.")
 
     _check_positive_coding(method, positive_code)
 
-    method = "lasso_" + method
+    # method = "lasso_" + method
 
     t0 = time.time()
     n_samples, n_features = X.shape
@@ -895,6 +937,15 @@ def dict_learning_online(
         dictionary = np.r_[
             dictionary, np.zeros((n_components - r, dictionary.shape[1]))
         ]
+
+    dictionary_func = None
+    if dict_method == "ksvd":
+        dictionary_func = ksvd_update_dict
+    elif dict_method == "online":
+        dictionary_func = _update_dict
+    else:
+        print("Method not found")
+        return
 
     if verbose == 1:
         print("[dict_learning]", end=" ")
@@ -962,13 +1013,14 @@ def dict_learning_online(
             theta = float(batch_size ** 2 + ii + 1 - batch_size)
         beta = (theta + 1 - batch_size) / (theta + 1)
 
-        A *= beta
-        A += np.dot(this_code.T, this_code)
-        B *= beta
-        B += np.dot(this_X.T, this_code)
+        if dict_method == "online":
+            A *= beta
+            A += np.dot(this_code.T, this_code)
+            B *= beta
+            B += np.dot(this_X.T, this_code)
 
         # Update dictionary in place
-        _update_dict(
+        dictionary_func(
             dictionary,
             this_X,
             this_code,
@@ -1803,6 +1855,7 @@ class MiniBatchDictionaryLearning(_BaseSparseCoding, BaseEstimator):
         positive_code=False,
         positive_dict=False,
         transform_max_iter=1000,
+        dict_method="online",
     ):
 
         super().__init__(
@@ -1825,6 +1878,7 @@ class MiniBatchDictionaryLearning(_BaseSparseCoding, BaseEstimator):
         self.split_sign = split_sign
         self.random_state = random_state
         self.positive_dict = positive_dict
+        self.dict_method = dict_method
 
     def fit(self, X, y=None):
         """Fit the model from data in X.
@@ -1864,6 +1918,7 @@ class MiniBatchDictionaryLearning(_BaseSparseCoding, BaseEstimator):
             return_n_iter=True,
             positive_dict=self.positive_dict,
             positive_code=self.positive_code,
+            dict_method=self.dict_method,
         )
         self.components_ = U
         # Keep track of the state of the algorithm to be able to do
@@ -1925,6 +1980,7 @@ class MiniBatchDictionaryLearning(_BaseSparseCoding, BaseEstimator):
             inner_stats=inner_stats,
             positive_dict=self.positive_dict,
             positive_code=self.positive_code,
+            dict_method=self.dict_method,
         )
         self.components_ = U
 
